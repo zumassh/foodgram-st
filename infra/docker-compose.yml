@@ -12,7 +12,7 @@ services:
     build:
       context: ../backend
     volumes:
-      - ../backend:/app
+      - ../backend:/app/foodgram
     command: >
       sh -c "until pg_isready -h db -p 5432; do
       echo 'Ожидание запуска базы данных...';
@@ -52,3 +52,6 @@ services:
 
 volumes:
   postgres_data:
+
+env_file:
+  - ../.env
