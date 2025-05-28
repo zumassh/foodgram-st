@@ -1,0 +1,26 @@
+[
+  {
+    "model": "api.ingredient",
+    "pk": 1,
+    "fields": {
+      "name": "Мука",
+      "measurement_unit": "г"
+    }
+  },
+  {
+    "model": "api.ingredient",
+    "pk": 2,
+    "fields": {
+      "name": "Сахар",
+      "measurement_unit": "г"
+    }
+  },
+  {
+    "model": "api.ingredient",
+    "pk": 3,
+    "fields": {
+      "name": "Яйцо",
+      "measurement_unit": "шт"
+    }
+  }
+]
