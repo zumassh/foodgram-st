@@ -3,13 +3,14 @@ from django.shortcuts import get_object_or_404
 from rest_framework import generics, status, views, permissions
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.generics import ListAPIView
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.authtoken.models import Token
 from .models import Recipe, Ingredient, Favorite, ShoppingCart, Follow
 from .serializers import (
-    UserSerializer, UserCreateSerializer, RecipeSerializer, RecipeCreateSerializer,
+    RecipeSerializer, RecipeCreateSerializer,
     IngredientSerializer, UserWithRecipesSerializer, SetAvatarSerializer,
-    SetPasswordSerializer, TokenCreateSerializer, RecipeMinifiedSerializer
+    RecipeMinifiedSerializer, CustomUserSerializer
 )
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly, AllowAny
 from django.http import HttpResponse
@@ -21,27 +22,6 @@ from .permissions import IsAuthorOrReadOnly
 
 User = get_user_model()
 
-class UserListCreateView(generics.ListCreateAPIView):
-    queryset = User.objects.all()
-    serializer_class = UserSerializer
-    permission_classes = [AllowAny]
-
-    def get_serializer_class(self):
-        if self.request.method == 'POST':
-            return UserCreateSerializer
-        return UserSerializer
-
-class UserDetailView(generics.RetrieveAPIView):
-    queryset = User.objects.all()
-    serializer_class = UserSerializer
-    permission_classes = [AllowAny]
-
-class UserMeView(generics.RetrieveAPIView):
-    serializer_class = UserSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_object(self):
-        return self.request.user
 
 class SetAvatarView(views.APIView):
     permission_classes = [IsAuthenticated]
@@ -57,6 +37,7 @@ class SetAvatarView(views.APIView):
         request.user.avatar.delete()
         request.user.save()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 class RecipeListCreateView(generics.ListCreateAPIView):
     queryset = Recipe.objects.all()
@@ -76,21 +57,22 @@ class RecipeListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         queryset = Recipe.objects.all()
         user = self.request.user
-    
+
         is_favorited = self.request.query_params.get('is_favorited')
         is_in_shopping_cart = self.request.query_params.get('is_in_shopping_cart')
-    
+
         if is_favorited == '1' and user.is_authenticated:
             queryset = queryset.filter(favorite__user=user)
-    
+
         if is_in_shopping_cart == '1' and user.is_authenticated:
             queryset = queryset.filter(shoppingcart__user=user)
-    
+
         author = self.request.query_params.get('author')
         if author is not None:
             queryset = queryset.filter(author__id=author)
-    
+
         return queryset
+
 
 class RecipeDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Recipe.objects.all()
@@ -108,11 +90,13 @@ class RecipeDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_destroy(self, instance):
         instance.delete()
 
+
 class RecipeShortLinkView(views.APIView):
     def get(self, request, id):
         recipe = get_object_or_404(Recipe, id=id)
         short_link = f"https://foodgram.example.org/s/{recipe.id}"
         return Response({"short-link": short_link}, status=status.HTTP_200_OK)
+
 
 class FavoriteView(views.APIView):
     permission_classes = [IsAuthenticated]
@@ -133,6 +117,7 @@ class FavoriteView(views.APIView):
         favorite.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+
 class ShoppingCartView(views.APIView):
     permission_classes = [IsAuthenticated]
 
@@ -151,6 +136,7 @@ class ShoppingCartView(views.APIView):
             return Response({"error": "Recipe not in shopping cart"}, status=status.HTTP_400_BAD_REQUEST)
         cart.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 class DownloadShoppingCartView(views.APIView):
     permission_classes = [IsAuthenticated]
@@ -173,12 +159,14 @@ class DownloadShoppingCartView(views.APIView):
         buffer.seek(0)
         return HttpResponse(buffer, content_type='application/pdf')
 
-class SubscriptionsView(generics.ListAPIView):
+
+class SubscriptionsView(ListAPIView):
     serializer_class = UserWithRecipesSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         return User.objects.filter(following__user=self.request.user)
+
 
 class SubscribeView(views.APIView):
     permission_classes = [IsAuthenticated]
@@ -201,6 +189,7 @@ class SubscribeView(views.APIView):
         follow.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+
 class IngredientListView(generics.ListAPIView):
     permission_classes = [AllowAny]
     queryset = Ingredient.objects.all()
@@ -209,38 +198,8 @@ class IngredientListView(generics.ListAPIView):
     filterset_fields = ['name']
     pagination_class = None
 
+
 class IngredientDetailView(generics.RetrieveAPIView):
     permission_classes = [AllowAny]
     queryset = Ingredient.objects.all()
     serializer_class = IngredientSerializer
-
-class SetPasswordView(views.APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        serializer = SetPasswordSerializer(data=request.data)
-        if serializer.is_valid():
-            if not request.user.check_password(serializer.validated_data['current_password']):
-                return Response({"error": "Invalid current password"}, status=status.HTTP_400_BAD_REQUEST)
-            request.user.set_password(serializer.validated_data['new_password'])
-            request.user.save()
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-class TokenLoginView(views.APIView):
-    def post(self, request):
-        serializer = TokenCreateSerializer(data=request.data)
-        if serializer.is_valid():
-            user = authenticate(email=serializer.validated_data['email'], password=serializer.validated_data['password'])
-            if user:
-                token, _ = Token.objects.get_or_create(user=user)
-                return Response({'auth_token': token.key}, status=status.HTTP_200_OK)
-            return Response({"error": "Invalid credentials"}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-class TokenLogoutView(views.APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        request.user.auth_token.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)

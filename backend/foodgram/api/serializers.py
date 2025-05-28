@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from djoser.serializers import UserCreateSerializer as BaseUserCreateSerializer, UserSerializer as BaseUserSerializer
 from django.contrib.auth import get_user_model
 from .models import Recipe, Ingredient, IngredientInRecipe, Favorite, ShoppingCart, Follow
 import base64
@@ -19,28 +20,26 @@ class Base64ImageField(serializers.ImageField):
             return ""
         return super().to_representation(value)
 
-class UserSerializer(serializers.ModelSerializer):
+class CustomUserCreateSerializer(BaseUserCreateSerializer):
+    class Meta(BaseUserCreateSerializer.Meta):
+        model = User
+        fields = ('id', 'email', 'username', 'first_name', 'last_name', 'password')
+
+class CustomUserSerializer(BaseUserSerializer):
     is_subscribed = serializers.SerializerMethodField()
 
-    class Meta:
+    class Meta(BaseUserSerializer.Meta):
         model = User
-        fields = ['email', 'id', 'username', 'first_name', 'last_name', 'is_subscribed', 'avatar']
+        fields = ('id', 'email', 'username', 'first_name', 'last_name', 'avatar', 'is_subscribed')
 
     def get_is_subscribed(self, obj):
-        request = self.context.get('request')
-        if not request or not request.user.is_authenticated:
-            return False
-        return Follow.objects.filter(user=request.user, author=obj).exists()
-
-class UserCreateSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = User
-        fields = ['email', 'id', 'username', 'first_name', 'last_name', 'password']
-        extra_kwargs = {'password': {'write_only': True}}
-
-    def create(self, validated_data):
-        user = User.objects.create_user(**validated_data)
-        return user
+        try:
+            request = self.context.get('request')
+            if request and hasattr(request, 'user') and request.user.is_authenticated:
+                return Follow.objects.filter(user=request.user, author=obj).exists()
+        except Exception:
+            pass
+        return False
 
 class IngredientSerializer(serializers.ModelSerializer):
     class Meta:
@@ -57,7 +56,7 @@ class IngredientInRecipeSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'measurement_unit', 'amount']
 
 class RecipeSerializer(serializers.ModelSerializer):
-    author = UserSerializer(read_only=True)
+    author = CustomUserSerializer(read_only=True)
     ingredients = IngredientInRecipeSerializer(many=True, source='ingredientinrecipe_set')
     is_favorited = serializers.SerializerMethodField()
     is_in_shopping_cart = serializers.SerializerMethodField()
@@ -163,12 +162,12 @@ class RecipeMinifiedSerializer(serializers.ModelSerializer):
         model = Recipe
         fields = ['id', 'name', 'image', 'cooking_time']
 
-class UserWithRecipesSerializer(UserSerializer):
+class UserWithRecipesSerializer(CustomUserSerializer):
     recipes = serializers.SerializerMethodField()
     recipes_count = serializers.SerializerMethodField()
 
-    class Meta(UserSerializer.Meta):
-        fields = UserSerializer.Meta.fields + ['recipes', 'recipes_count']
+    class Meta(CustomUserSerializer.Meta):
+        fields = CustomUserSerializer.Meta.fields + ('recipes', 'recipes_count')
 
     def get_recipes(self, obj):
         request = self.context.get('request')
@@ -187,11 +186,3 @@ class SetAvatarSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['avatar']
-
-class SetPasswordSerializer(serializers.Serializer):
-    new_password = serializers.CharField()
-    current_password = serializers.CharField()
-
-class TokenCreateSerializer(serializers.Serializer):
-    email = serializers.EmailField()
-    password = serializers.CharField()
