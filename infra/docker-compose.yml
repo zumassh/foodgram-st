@@ -11,14 +11,15 @@ services:
     container_name: foodgram-back
     build:
       context: ../backend
-    volumes:
-      - ../backend:/app/foodgram
     command: >
       sh -c "until pg_isready -h db -p 5432; do
       echo 'Ожидание запуска базы данных...';
       sleep 1;
       done &&
-      python manage.py migrate &&
+      ls foodgram &&
+      pwd &&
+      python foodgram/manage.py migrate &&
+      cd foodgram &&
       gunicorn foodgram.wsgi:application --bind 0.0.0.0:8000"
     ports:
       - "8000:8000"
@@ -52,6 +53,3 @@ services:
 
 volumes:
   postgres_data:
-
-env_file:
-  - ../.env

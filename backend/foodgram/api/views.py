@@ -1,12 +1,13 @@
 from django.contrib.auth import authenticate, get_user_model
 from django.shortcuts import get_object_or_404
+from django.db.models import Sum
 from rest_framework import generics, status, views, permissions
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.generics import ListAPIView
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.authtoken.models import Token
-from .models import Recipe, Ingredient, Favorite, ShoppingCart, Follow
+from .models import Recipe, Ingredient, Favorite, ShoppingCart, Follow, IngredientInRecipe
 from .serializers import (
     RecipeSerializer, RecipeCreateSerializer,
     IngredientSerializer, UserWithRecipesSerializer, SetAvatarSerializer,
@@ -19,8 +20,16 @@ from reportlab.pdfgen import canvas
 import io
 from django_filters.rest_framework import DjangoFilterBackend
 from .permissions import IsAuthorOrReadOnly
+from django.urls import reverse
 
 User = get_user_model()
+
+PDF_TITLE_X = 100
+PDF_TITLE_Y = 750
+PDF_ITEM_START_Y = 700
+PDF_ITEM_OFFSET = 20
+PDF_PAGE_SIZE = A4
+PDF_LEFT_MARGIN = 100
 
 
 class SetAvatarView(views.APIView):
@@ -37,6 +46,14 @@ class SetAvatarView(views.APIView):
         request.user.avatar.delete()
         request.user.save()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MeView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        serializer = CustomUserSerializer(request.user)
+        return Response(serializer.data)
 
 
 class RecipeListCreateView(generics.ListCreateAPIView):
@@ -62,10 +79,10 @@ class RecipeListCreateView(generics.ListCreateAPIView):
         is_in_shopping_cart = self.request.query_params.get('is_in_shopping_cart')
 
         if is_favorited == '1' and user.is_authenticated:
-            queryset = queryset.filter(favorite__user=user)
+            queryset = queryset.filter(favorited_by__user=user)
 
         if is_in_shopping_cart == '1' and user.is_authenticated:
-            queryset = queryset.filter(shoppingcart__user=user)
+            queryset = queryset.filter(in_shopping_carts__user=user)
 
         author = self.request.query_params.get('author')
         if author is not None:
@@ -94,7 +111,9 @@ class RecipeDetailView(generics.RetrieveUpdateDestroyAPIView):
 class RecipeShortLinkView(views.APIView):
     def get(self, request, id):
         recipe = get_object_or_404(Recipe, id=id)
-        short_link = f"https://foodgram.example.org/s/{recipe.id}"
+        short_link = request.build_absolute_uri(
+            reverse('recipe-detail', kwargs={'pk': recipe.id})
+        )
         return Response({"short-link": short_link}, status=status.HTTP_200_OK)
 
 
@@ -103,7 +122,7 @@ class FavoriteView(views.APIView):
 
     def post(self, request, id):
         recipe = get_object_or_404(Recipe, id=id)
-        if Favorite.objects.filter(user=request.user, recipe=recipe).exists():
+        if request.user.favorites.filter(recipe=recipe).exists():
             return Response({"error": "Recipe already in favorites"}, status=status.HTTP_400_BAD_REQUEST)
         Favorite.objects.create(user=request.user, recipe=recipe)
         serializer = RecipeMinifiedSerializer(recipe)
@@ -111,7 +130,7 @@ class FavoriteView(views.APIView):
 
     def delete(self, request, id):
         recipe = get_object_or_404(Recipe, id=id)
-        favorite = Favorite.objects.filter(user=request.user, recipe=recipe)
+        favorite = request.user.favorites.filter(recipe=recipe)
         if not favorite.exists():
             return Response({"error": "Recipe not in favorites"}, status=status.HTTP_400_BAD_REQUEST)
         favorite.delete()
@@ -123,7 +142,7 @@ class ShoppingCartView(views.APIView):
 
     def post(self, request, id):
         recipe = get_object_or_404(Recipe, id=id)
-        if ShoppingCart.objects.filter(user=request.user, recipe=recipe).exists():
+        if recipe.in_shopping_carts.filter(user=request.user).exists():
             return Response({"error": "Recipe already in shopping cart"}, status=status.HTTP_400_BAD_REQUEST)
         ShoppingCart.objects.create(user=request.user, recipe=recipe)
         serializer = RecipeMinifiedSerializer(recipe)
@@ -131,7 +150,7 @@ class ShoppingCartView(views.APIView):
 
     def delete(self, request, id):
         recipe = get_object_or_404(Recipe, id=id)
-        cart = ShoppingCart.objects.filter(user=request.user, recipe=recipe)
+        cart = request.user.shopping_carts.filter(recipe=recipe)
         if not cart.exists():
             return Response({"error": "Recipe not in shopping cart"}, status=status.HTTP_400_BAD_REQUEST)
         cart.delete()
@@ -142,18 +161,31 @@ class DownloadShoppingCartView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        ingredients = (
+            IngredientInRecipe.objects
+            .filter(recipe__in_shopping_carts__user=request.user)
+            .values(
+                'ingredient__name',
+                'ingredient__measurement_unit'
+            )
+            .annotate(total_amount=Sum('amount'))
+            .order_by('ingredient__name')
+        )
+
         buffer = io.BytesIO()
-        p = canvas.Canvas(buffer, pagesize=A4)
-        p.drawString(100, 750, "Shopping List")
-        y = 700
-        ingredients = {}
-        for cart in ShoppingCart.objects.filter(user=request.user):
-            for ingredient in cart.recipe.ingredientinrecipe_set.all():
-                key = (ingredient.ingredient.name, ingredient.ingredient.measurement_unit)
-                ingredients[key] = ingredients.get(key, 0) + ingredient.amount
-        for (name, unit), amount in ingredients.items():
-            p.drawString(100, y, f"{name}: {amount} {unit}")
-            y -= 20
+        p = canvas.Canvas(buffer, pagesize=PDF_PAGE_SIZE)
+        
+        p.drawString(PDF_TITLE_X, PDF_TITLE_Y, "Список покупок")
+        
+        y_position = PDF_ITEM_START_Y
+        for item in ingredients:
+            p.drawString(
+                PDF_LEFT_MARGIN, 
+                y_position, 
+                f"{item['ingredient__name']}: {item['total_amount']} {item['ingredient__measurement_unit']}"
+            )
+            y_position -= PDF_ITEM_OFFSET
+        
         p.showPage()
         p.save()
         buffer.seek(0)
@@ -165,7 +197,7 @@ class SubscriptionsView(ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return User.objects.filter(following__user=self.request.user)
+        return User.objects.filter(subscribers__user=self.request.user)
 
 
 class SubscribeView(views.APIView):
@@ -175,7 +207,7 @@ class SubscribeView(views.APIView):
         author = get_object_or_404(User, id=id)
         if author == request.user:
             return Response({"error": "Cannot subscribe to yourself"}, status=status.HTTP_400_BAD_REQUEST)
-        if Follow.objects.filter(user=request.user, author=author).exists():
+        if request.user.subscriptions.filter(author=author).exists():
             return Response({"error": "Already subscribed"}, status=status.HTTP_400_BAD_REQUEST)
         Follow.objects.create(user=request.user, author=author)
         serializer = UserWithRecipesSerializer(author, context={'request': request})
@@ -183,7 +215,7 @@ class SubscribeView(views.APIView):
 
     def delete(self, request, id):
         author = get_object_or_404(User, id=id)
-        follow = Follow.objects.filter(user=request.user, author=author)
+        follow = request.user.subscriptions.filter(author=author)
         if not follow.exists():
             return Response({"error": "Not subscribed"}, status=status.HTTP_400_BAD_REQUEST)
         follow.delete()
